@@ -1,0 +1,14 @@
+pymysql
+langchain
+langgraph
+langchain-community
+langchain_openai
+PyJWT
+langchain-anthropic
+# 向量检索依赖
+faiss-cpu
+numpy
+# 向量生成依赖
+transformers
+torch
+tqdm
