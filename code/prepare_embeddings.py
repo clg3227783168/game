@@ -76,7 +76,7 @@ if __name__ == '__main__':
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     # 文件路径
-    true_json_path = os.path.join(script_dir, 'data', 'true.json')
+    true_json_path = os.path.join(script_dir, 'data', 'final_dataset.json')
     output_path = os.path.join(script_dir, 'data', 'embedding_inputs.json')
 
     # 生成嵌入输入
@@ -87,10 +87,3 @@ if __name__ == '__main__':
 
     print(f"\n总共 {len(embedding_inputs)} 条记录需要生成向量")
     print(f"嵌入输入已保存到: {output_path}")
-    print("\n推荐嵌入模型:")
-    print("  - OpenAI: text-embedding-3-small (维度1536)")
-    print("  - 开源中文: bge-large-zh-v1.5 (维度1024)")
-    print("\n下一步:")
-    print("1. 使用嵌入模型对每条 text 生成向量")
-    print("2. 将向量保存到 data/embeddings.json")
-    print("3. 格式: {'embeddings': [{'sql_id': 'xxx', 'vector': [...]}]}")

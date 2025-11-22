@@ -7,7 +7,7 @@ import json
 import os
 from typing import List
 import torch
-from transformers import AutoTokenizer, AutoModel
+from modelscope  import AutoTokenizer, AutoModel
 import numpy as np
 from tqdm import tqdm
 

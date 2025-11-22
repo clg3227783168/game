@@ -7,18 +7,12 @@ import json
 import os
 import numpy as np
 from typing import List, Dict, Optional
-
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
-
+import faiss
 
 class SQLCaseRetriever:
     """SQL案例检索器 - 基于向量相似度检索相似案例"""
 
-    def __init__(self, true_cases_path: str, embeddings_path: str = None):
+    def __init__(self):
         """
         初始化检索器
 
@@ -26,7 +20,8 @@ class SQLCaseRetriever:
             true_cases_path: true.json文件路径
             embeddings_path: embeddings.json文件路径（向量数据）
         """
-        self.cases = self._load_cases(true_cases_path)
+        with open(str(Path(__file__).parent / "data/true.json"), 'r', encoding='utf-8') as f:
+            self.cases = json.load(f)
         self.case_index = {case['sql_id']: case for case in self.cases}
 
         # 向量检索相关
@@ -35,37 +30,11 @@ class SQLCaseRetriever:
         self.sql_ids = []
         self.dimension = None
 
-        # 尝试加载向量索引
-        if embeddings_path is None:
-            embeddings_path = os.path.join(
-                os.path.dirname(true_cases_path),
-                'embeddings.json'
-            )
-
-        if os.path.exists(embeddings_path):
-            self._load_embeddings(embeddings_path)
-
-    def _load_cases(self, path: str) -> List[Dict]:
-        """加载参考案例"""
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"参考案例文件不存在: {path}")
-
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-
-    def _load_embeddings(self, path: str):
         """加载预计算的向量嵌入"""
-        if not FAISS_AVAILABLE:
-            print("警告: FAISS未安装，向量检索不可用，将使用文本相似度")
-            return
-
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(str(Path(__file__).parent / "data/embeddings.json"), 'r', encoding='utf-8') as f:
             data = json.load(f)
 
         embeddings_list = data.get('embeddings', [])
-        if not embeddings_list:
-            print("警告: 向量数据为空")
-            return
 
         # 构建FAISS索引
         self.sql_ids = [item['sql_id'] for item in embeddings_list]
@@ -84,8 +53,7 @@ class SQLCaseRetriever:
     def retrieve_by_vector(
         self,
         query_vector: List[float],
-        top_k: int = 3,
-        table_filter: List[str] = None
+        top_k: int = 3
     ) -> List[Dict]:
         """
         使用查询向量检索最相似的案例
@@ -93,8 +61,6 @@ class SQLCaseRetriever:
         Args:
             query_vector: 查询问题的向量表示
             top_k: 返回前k个最相似的案例
-            table_filter: 表名过滤列表（可选）
-
         Returns:
             相似案例列表
         """
@@ -106,7 +72,7 @@ class SQLCaseRetriever:
         faiss.normalize_L2(query)
 
         # 执行检索（获取更多结果用于表名过滤）
-        search_k = top_k * 3 if table_filter else top_k
+        search_k = top_k
         distances, indices = self.faiss_index.search(query, min(search_k, len(self.sql_ids)))
 
         results = []
@@ -119,14 +85,6 @@ class SQLCaseRetriever:
 
             if case is None:
                 continue
-
-            # 表名过滤
-            if table_filter:
-                case_tables = set(case.get('table_list', []))
-                filter_tables = set(table_filter)
-                # 有交集才保留
-                if not (case_tables & filter_tables):
-                    continue
 
             results.append({
                 'case': case,
@@ -158,51 +116,8 @@ class SQLCaseRetriever:
         Returns:
             相似案例列表
         """
-        # 如果提供了向量且索引可用，使用向量检索
-        if query_vector is not None and self.faiss_index is not None:
-            return self.retrieve_by_vector(query_vector, top_k, table_list)
+        return self.retrieve_by_vector(query_vector, top_k, table_list)
 
-        # 回退到文本相似度检索
-        return self._retrieve_by_text_similarity(question, table_list, top_k)
-
-    def _retrieve_by_text_similarity(
-        self,
-        question: str,
-        table_list: List[str] = None,
-        top_k: int = 3
-    ) -> List[Dict]:
-        """基于文本相似度的检索（回退方法）"""
-        from difflib import SequenceMatcher
-
-        scored_cases = []
-
-        for case in self.cases:
-            # 综合评分：问题相似度 + 表匹配度
-            question_sim = SequenceMatcher(None, question, case['question']).ratio()
-
-            table_sim = 0.0
-            if table_list and case.get('table_list'):
-                target_set = set(table_list)
-                case_set = set(case['table_list'])
-                intersection = target_set & case_set
-                union = target_set | case_set
-                table_sim = len(intersection) / len(union) if union else 0.0
-
-            # 加权得分
-            score = 0.7 * question_sim + 0.3 * table_sim
-
-            scored_cases.append({
-                'case': case,
-                'score': score,
-                'question_sim': question_sim,
-                'table_sim': table_sim
-            })
-
-        # 按分数排序
-        scored_cases.sort(key=lambda x: x['score'], reverse=True)
-
-        # 返回top_k个案例
-        return [item['case'] for item in scored_cases[:top_k]]
 
     def prepare_query_text(self, question: str, knowledge: str = None, table_list: List[str] = None) -> str:
         """
@@ -234,10 +149,8 @@ class SQLCaseRetriever:
 
 # 使用示例
 if __name__ == '__main__':
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    true_json_path = os.path.join(script_dir, 'data', 'true.json')
 
-    retriever = SQLCaseRetriever(true_json_path)
+    retriever = SQLCaseRetriever()
 
     if retriever.is_vector_search_available():
         print("向量检索已启用")
@@ -245,9 +158,6 @@ if __name__ == '__main__':
         print("1. 使用 retriever.prepare_query_text() 准备查询文本")
         print("2. 将文本发送到嵌入模型获取向量")
         print("3. 调用 retriever.retrieve_by_vector(query_vector, top_k=3)")
-    else:
-        print("向量检索未启用（缺少 embeddings.json 或 FAISS）")
-        print("将使用文本相似度检索")
 
         # 演示文本相似度检索
         test_question = "统计2024年各玩法的参与人数"
