@@ -1,18 +1,26 @@
 """
 SQL生成节点 - 基于Schema Linking结果和参考案例生成SQL
 利用true.json中的正确SQL案例进行Few-Shot Learning
+使用结构化输出确保生成结果的规范性和可解析性
 """
 
 import json
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import PydanticOutputParser
 from llm_backend.getllm import get_claude_llm
 from base_agent import BaseAgent
 from sql_case_retrive import SQLCaseRetriever
-import pathlib
+from pathlib import Path
 
+
+class SQLGenerationResult(BaseModel):
+    """SQL生成结果的结构化输出模型"""
+    sql: str = Field(
+        description="生成的SQL查询语句，必须是完整可执行的SQL"
+    )
 
 SQL_GENERATION_PROMPT = """你是一个专业的查询类SQL生成专家。
 
@@ -45,26 +53,17 @@ SQL_GENERATION_PROMPT = """你是一个专业的查询类SQL生成专家。
 2. 使用Schema Linking识别出的表和列
 3. 参考相似案例的SQL写法和模式
 4. 确保SQL语法正确，逻辑清晰
-5. 只输出SQL语句，不要包含其他解释
 
-**输出格式：**
-```sql
--- 这里写生成的SQL语句
-```
+{format_instructions}
 
-现在请生成SQL：
+现在请按照上述格式生成SQL：
 """
 
 
 class SQLGenerationNode(BaseAgent):
     """SQL生成节点 - 基于Schema Linking和参考案例生成SQL"""
 
-    def __init__(
-        self,
-        true_cases_path: str = None,
-        schema_path: str = None,
-        llm = None
-    ):
+    def __init__(self):
         """
         初始化SQL生成节点
 
@@ -75,24 +74,14 @@ class SQLGenerationNode(BaseAgent):
         """
         super().__init__()
 
-        # 设置默认路径
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-
-        if true_cases_path is None:
-            true_cases_path = os.path.join(current_dir, 'data', 'true.json')
-
-        if schema_path is None:
-            schema_path = os.path.join(current_dir, 'data', 'schema.json')
-
         # 初始化组件
-        self.retriever = SQLCaseRetriever(true_cases_path)
-        self.llm = llm if llm else get_claude_llm()
+        self.retriever = SQLCaseRetriever(str(Path(__file__).parent / "data/true.json"),)
+        self.llm = get_claude_llm()
 
-        # 加载schema信息
-        with open(schema_path, 'r', encoding='utf-8') as f:
-            self.schema_data = json.load(f)
+        # 创建结构化输出解析器
+        self.output_parser = PydanticOutputParser(pydantic_object=SQLGenerationResult)
 
-        # 创建prompt模板
+        # 创建prompt模板（包含格式说明）
         self.prompt = PromptTemplate(
             template=SQL_GENERATION_PROMPT,
             input_variables=[
@@ -102,88 +91,18 @@ class SQLGenerationNode(BaseAgent):
                 'schema_links',
                 'table_schemas',
                 'reference_cases'
-            ]
+            ],
+            partial_variables={
+                'format_instructions': self.output_parser.get_format_instructions()
+            }
         )
 
-        # 创建链
-        self.chain = self.prompt | self.llm | StrOutputParser()
+        # 创建链：prompt -> llm -> parser
+        self.chain = self.prompt | self.llm | self.output_parser
 
-    def _format_reference_cases(self, cases: List[Dict]) -> str:
-        """格式化参考案例"""
-        if not cases:
-            return "无参考案例"
-
-        formatted = []
-        for i, case in enumerate(cases, 1):
-            formatted.append(f"\n=== 参考案例 {i} ===")
-            formatted.append(f"问题: {case['question'][:150]}...")
-
-            if case.get('knowledge'):
-                formatted.append(f"业务知识: {case['knowledge'][:150]}...")
-
-            formatted.append(f"SQL:\n```sql\n{case['sql']}\n```")
-
-        return '\n'.join(formatted)
-
-    def _format_schema_links(self, schema_links: List[str]) -> str:
-        """格式化Schema Links"""
-        if not schema_links:
-            return "无Schema Links"
-
-        # 分类整理
-        tables_columns = []
-        joins = []
-        values = []
-
-        for link in schema_links:
-            if '=' in link:
-                joins.append(link)
-            elif '.' in link:
-                tables_columns.append(link)
-            else:
-                values.append(link)
-
-        result = []
-
-        if tables_columns:
-            result.append("需要使用的表和列:")
-            for tc in tables_columns:
-                result.append(f"  - {tc}")
-
-        if joins:
-            result.append("\nJOIN关系:")
-            for j in joins:
-                result.append(f"  - {j}")
-
-        if values:
-            result.append("\n需要的常量值:")
-            for v in values:
-                result.append(f"  - {v}")
-
-        return '\n'.join(result)
-
-    def _extract_sql_from_response(self, response: str) -> str:
-        """从LLM响应中提取SQL语句"""
-        # 尝试提取代码块中的SQL
-        import re
-
-        # 匹配 ```sql ... ``` 或 ``` ... ```
-        pattern = r'```(?:sql)?\s*(.*?)\s*```'
-        matches = re.findall(pattern, response, re.DOTALL)
-
-        if matches:
-            sql = matches[0].strip()
-            # 移除可能的注释行
-            lines = sql.split('\n')
-            sql_lines = [line for line in lines if not line.strip().startswith('--')]
-            return '\n'.join(sql_lines).strip()
-
-        # 如果没有代码块，返回整个响应
-        return response.strip()
-
-    def run(self, input_data: Dict[str, Any]) -> Dict[str, str]:
+    def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        生成SQL语句
+        生成SQL语句（结构化输出）
 
         Args:
             input_data: 输入数据，应包含：
@@ -191,9 +110,12 @@ class SQLGenerationNode(BaseAgent):
                 - table_list: 表列表
                 - schema_links: Schema Linking结果（可选）
                 - knowledge: 业务知识（可选）
+                - table_schemas: 表结构信息（可选）
 
         Returns:
-            包含SQL语句的字典: {"sql": "具体语句内容"}
+            结构化的SQL生成结果字典，包含以下字段：
+                - sql: 生成的SQL语句
+                - columns_used: 使用的列列表
         """
         question = input_data.get('question')
         table_list = input_data.get('table_list')
@@ -204,40 +126,35 @@ class SQLGenerationNode(BaseAgent):
         print(f"\n[SQL生成] 开始生成SQL...")
         print(f"问题: {question[:100]}...")
 
-        # 1. 检索相似案例
-        print("\n[1/4] 检索相似案例...")
-        similar_cases = self.retriever.retrieve_similar_cases(
-            question=question,
-            table_list=table_list,
-            top_k=3
-        )
-        print(f"找到 {len(similar_cases)} 个相似案例")
-
-        # 3. 格式化输入
-        print("\n[3/4] 构建生成prompt...")
-        formatted_cases = self._format_reference_cases(similar_cases)
-        formatted_links = self._format_schema_links(schema_links)
-
         prompt_input = {
             'common_knowledge': self.common_knowledge,
             'question': question,
             'knowledge': knowledge if knowledge else '无',
-            'schema_links': formatted_links,
+            'schema_links': schema_links,
             'table_schemas': table_schemas,
-            'reference_cases': formatted_cases
+            'reference_cases': similar_cases
         }
 
-        # 4. 调用LLM生成SQL
-        print("\n[4/4] 调用LLM生成SQL...")
+        # 4. 调用LLM生成SQL（结构化输出）
+        print("\n[4/4] 调用LLM生成结构化SQL...")
         try:
-            response = self.chain.invoke(prompt_input)
-            generated_sql = self._extract_sql_from_response(response)
+            result: SQLGenerationResult = self.chain.invoke(prompt_input)
 
             print(f"\n[完成] SQL生成成功！")
-            return {"sql": generated_sql}
+
+            # 转换为字典返回
+            return {
+                "sql": result.sql
+            }
 
         except Exception as e:
             print(f"\n[错误] SQL生成失败: {e}")
             import traceback
             traceback.print_exc()
-            return {"sql": ""}
+
+            # 返回空结果
+            return {
+                "sql": "",
+                "explanation": f"生成失败: {str(e)}",
+                "notes": "生成过程出现异常"
+            }

@@ -120,7 +120,12 @@ class SchemaLinkingNode(BaseAgent):
         print(response)
         print("''''''''''")
         validated = SchemaValidator(self.table_columns)
-        return (validated.validate_and_filter(self._parse_response(response)), table_schemas)
+        return {
+            "sql_id": input_data["sql_id"],
+            "question": input_data["question"],
+            "schema_links": validated.validate_and_filter(self._parse_response(response)),
+            "table_schemas": table_schemas
+        }
 
     def _parse_response(self, response: str) -> List[str]:
         """解析 LLM 响应，提取 schema links"""
@@ -153,8 +158,8 @@ if __name__ == "__main__":
     }
 
     node = SchemaLinkingNode()
-    schema_links, _ = node.run(test_data)
-
+    output = node.run(test_data)
+    schema_links = output['schema_links']
     print("\nSchema Links:")
     for i, link in enumerate(schema_links, 1):
         print(f"{i}. {link}")

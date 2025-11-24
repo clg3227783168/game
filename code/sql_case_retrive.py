@@ -7,6 +7,7 @@ import json
 import os
 import numpy as np
 from typing import List, Dict, Optional
+from pathlib import Path
 import faiss
 
 class SQLCaseRetriever:
@@ -34,7 +35,7 @@ class SQLCaseRetriever:
         with open(str(Path(__file__).parent / "data/embeddings.json"), 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        embeddings_list = data.get('embeddings', [])
+        embeddings_list = data.get('embeddings')
 
         # 构建FAISS索引
         self.sql_ids = [item['sql_id'] for item in embeddings_list]
@@ -52,7 +53,7 @@ class SQLCaseRetriever:
 
     def retrieve_by_vector(
         self,
-        query_vector: List[float],
+        sql_id: str,
         top_k: int = 3
     ) -> List[Dict]:
         """
@@ -64,16 +65,18 @@ class SQLCaseRetriever:
         Returns:
             相似案例列表
         """
-        if self.faiss_index is None:
-            raise RuntimeError("向量索引未初始化，请先加载embeddings.json")
+        # 根据sql_id找到对应的向量
+        try:
+            query_idx = self.sql_ids.index(sql_id)
+            query_vector = self.embeddings[query_idx]
+        except ValueError:
+            raise ValueError(f"找不到 sql_id '{sql_id}' 对应的向量")
 
         # 准备查询向量
         query = np.array([query_vector], dtype='float32')
         faiss.normalize_L2(query)
 
-        # 执行检索（获取更多结果用于表名过滤）
-        search_k = top_k
-        distances, indices = self.faiss_index.search(query, min(search_k, len(self.sql_ids)))
+        distances, indices = self.faiss_index.search(query, top_k)
 
         results = []
         for dist, idx in zip(distances[0], indices[0]):
@@ -97,77 +100,54 @@ class SQLCaseRetriever:
 
         return [item['case'] for item in results]
 
-    def retrieve_similar_cases(
-        self,
-        question: str,
-        table_list: List[str] = None,
-        top_k: int = 3,
-        query_vector: List[float] = None
-    ) -> List[Dict]:
-        """
-        检索最相似的案例（兼容旧接口）
-
-        Args:
-            question: 目标问题
-            table_list: 涉及的表列表
-            top_k: 返回前k个最相似的案例
-            query_vector: 查询向量（如果提供则使用向量检索）
-
-        Returns:
-            相似案例列表
-        """
-        return self.retrieve_by_vector(query_vector, top_k, table_list)
-
-
-    def prepare_query_text(self, question: str, knowledge: str = None, table_list: List[str] = None) -> str:
-        """
-        准备查询文本，用于生成查询向量
-
-        Args:
-            question: 问题描述
-            knowledge: 业务知识
-            table_list: 表名列表
-
-        Returns:
-            拼接后的查询文本
-        """
-        parts = [f"问题: {question}"]
-
-        if knowledge:
-            parts.append(f"业务知识: {knowledge}")
-
-        if table_list:
-            tables = ', '.join(table_list)
-            parts.append(f"涉及表: {tables}")
-
-        return '\n'.join(parts)
-
-    def is_vector_search_available(self) -> bool:
-        """检查向量检索是否可用"""
-        return self.faiss_index is not None
-
-
 # 使用示例
 if __name__ == '__main__':
+    from pathlib import Path
 
     retriever = SQLCaseRetriever()
 
-    if retriever.is_vector_search_available():
-        print("向量检索已启用")
-        print("\n使用方法:")
-        print("1. 使用 retriever.prepare_query_text() 准备查询文本")
-        print("2. 将文本发送到嵌入模型获取向量")
-        print("3. 调用 retriever.retrieve_by_vector(query_vector, top_k=3)")
+    # 读取 false.json 文件
+    false_json_path = Path(__file__).parent / "data/false.json"
+    with open(false_json_path, 'r', encoding='utf-8') as f:
+        false_cases = json.load(f)
 
-        # 演示文本相似度检索
-        test_question = "统计2024年各玩法的参与人数"
-        results = retriever.retrieve_similar_cases(
-            question=test_question,
-            table_list=['dws_jordass_mode_roundrecord_di'],
-            top_k=3
-        )
+    print(f"开始为 {len(false_cases)} 条 false.json 数据检索相似案例...")
 
-        print(f"\n查询: {test_question}")
-        print(f"找到 {len(results)} 条相似案例:")
-        for i, case in enumerate(results, 1):
-            print(f"  {i}. [{case['sql_id']}] {case['question'][:50]}...")
+    # 存储结果
+    results_mapping = {}
+
+    # 为每个 false.json 中的数据找到最相似的2条数据的 sql_id
+    for idx, case in enumerate(false_cases, 1):
+        sql_id = case['sql_id']
+
+        try:
+            # 检索最相似的案例 (top_k=3，因为可能包含自己，所以多取一个)
+            similar_cases = retriever.retrieve_by_vector(
+                sql_id=sql_id,
+                top_k=3
+            )
+
+            # 提取 sql_id，过滤掉自己（如果存在）
+            similar_sql_ids = []
+            for similar_case in similar_cases:
+                if similar_case['sql_id'] != sql_id:
+                    similar_sql_ids.append(similar_case['sql_id'])
+                if len(similar_sql_ids) >= 2:
+                    break
+
+            results_mapping[sql_id] = similar_sql_ids[:2]
+
+            if idx % 10 == 0:
+                print(f"已处理 {idx}/{len(false_cases)} 条数据...")
+
+        except ValueError as e:
+            print(f"警告: {sql_id} 无法找到对应的向量: {e}")
+            results_mapping[sql_id] = []
+
+    # 输出结果到 false2true.json
+    output_path = Path(__file__).parent / "data/false2true.json"
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(results_mapping, f, ensure_ascii=False, indent=2)
+
+    print(f"\n完成！结果已保存到: {output_path}")
+    print(f"共处理 {len(results_mapping)} 条数据")
