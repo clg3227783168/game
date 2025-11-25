@@ -18,8 +18,7 @@ def get_claude_llm():
         openai_api_base=BASE_URL,
         # 如果需要代理，取消下面这行的注释，并填入你的代理地址
         # http_client=httpx.Client(proxies="http://127.0.0.1:7890"), 
-        temperature=0.7,
-        max_tokens=4096
+        temperature=0.1
     )
     return llm
 

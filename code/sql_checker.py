@@ -23,7 +23,7 @@ class SQLCheckerNode(BaseAgent):
         """
         初始化 SQL 检查节点
         """
-        db_uri = "mysql+pymysql://root@127.0.0.1:3306/database_name"
+        db_uri = "mysql+pymysql://root@127.0.0.1:9030/database_name"
 
         # 连接到数据库
         try:

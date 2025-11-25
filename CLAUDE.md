@@ -1,15 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+**一定要在.venv/虚拟环境中执行python命令**
 
 ## 项目概述
 
-这是一个基于 LangChain/LangGraph 的 Text-to-SQL 项目，用于从自然语言问题生成 SQL 查询语句。项目专注于游戏数据分析场景。
-
-核心功能包括：
-- Schema Linking：从自然语言问题中识别需要使用的表、列、JOIN 关系和具体值
-- SQL 执行：通过 PyMySQL 连接数据库执行 SQL 并验证结果
-- 根据Schema Linking的结果生成aql语句 未实现
+这是一个基于 LangChain/LangGraph 的 Text-to-SQL 项目，用于从自然语言问题生成 SQL 查询语句。专注于游戏数据分析场景。
 
 ## 项目结构
 
@@ -40,33 +35,4 @@ game/
     ├── sql_file/                # SQL 文件目录
     │   ├── create_table.sql     # 建表语句
     │   └── drop_table.sql       # 删表语句
-```
-
-###  Schema Linking 节点 (`schema_linking.py`)
-负责从自然语言问题中识别数据库 schema 元素。
-
-**使用方式：**
-```python
-from schema_linking import SchemaLinkingNode
-
-node = SchemaLinkingNode()
-result = node.run({
-    'question': '统计开服至今使用频率最高的用户昵称',
-    'table_list': ['dwd_argothek_playerlogin_hi'],
-    'knowledge': '昵称筛选逻辑：nickname按照#进行划分，取#前半部分的作为nickname'
-})
-```
-
-### 数据格式
-数据集中每条记录包含：
-```json
-{
-    "sql_id": "sql_28",
-    "question": "统计各个玩法上线首周留存情况...",
-    "sql": "SELECT ...",
-    "复杂度": "中等",
-    "table_list": ["dws_jordass_mode_roundrecord_di"],
-    "knowledge": "说明：广域战场...",
-    "golden_sql": true
-}
 ```

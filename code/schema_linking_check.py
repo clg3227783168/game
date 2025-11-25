@@ -73,7 +73,7 @@ class SchemaValidator:
         table_name, column_name = parts
         return self.validate_column(table_name.strip(), column_name.strip())
 
-    def validate_and_filter(self, schema_links: List[str]) -> List[str]:
+    def validate_and_filter(self, schema_links: List[str]) -> str:
         """
         验证并过滤 schema links 列表
 
@@ -92,7 +92,7 @@ class SchemaValidator:
             else:
                 print(f"警告: Schema link 验证失败，已过滤: {link}")
 
-        return validated
+        return ' '.join(validated)
 
 
 def create_validator_from_schema(schema_data: List[Dict]) -> SchemaValidator:

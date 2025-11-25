@@ -274,6 +274,6 @@ if __name__ == '__main__':
     # sql_executor.insert_data_with_pymysql(insert_file_path, insert_result_file_path, db_configuration)
     
     # 执行查询操作
-    dataset_file_path = "code/json/final_dataset.json"
+    dataset_file_path = "code/data/generated_sqls.json"
     dataset_result_file_path = "dataset_exe_result.json"
     sql_executor.execute_sql_with_pymysql(dataset_file_path, dataset_result_file_path, db_config = db_configuration)
