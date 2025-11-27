@@ -14,9 +14,9 @@ from base_agent import BaseAgent
 from schema_linking_check import SchemaValidator
 
 # Prompt 模板
-SCHEMA_LINKING_PROMPT_TEMPLATE = """你是一个专业的 SQL Schema Linking 专家。
+SCHEMA_LINKING_PROMPT_TEMPLATE = """你是一个专业的 SQL Schema Linking 专家。你的任务是将自然语言问题准确映射到数据库架构。
 
-**【系统固有知识 - 请牢记】**
+**【系统固有知识】**
 {common_knowledge}
 
 **业务知识：**
@@ -24,7 +24,7 @@ SCHEMA_LINKING_PROMPT_TEMPLATE = """你是一个专业的 SQL Schema Linking 专
 
 ---
 
-给定以下信息：
+**【待处理任务】**
 
 **问题描述：**
 {question}
@@ -32,7 +32,7 @@ SCHEMA_LINKING_PROMPT_TEMPLATE = """你是一个专业的 SQL Schema Linking 专
 **可用表：**
 {table_list}
 
-**表结构详情：**
+**详细表结构：**
 {table_schemas}
 
 ---
@@ -95,31 +95,74 @@ class SchemaLinkingNode(BaseAgent):
             table_info = self.tables[table_name]
             result.append(f"\n表名: {table_name}")
             result.append(f"描述: {table_info.get('table_description', 'N/A')}")
-            result.append("列:")
+            result.append("列名: (数据类型): 描述")
             for col in table_info['columns']:
                 result.append(f"  - {col['col']} ({col['type']}): {col['description']}")
 
         return '\n'.join(result)
 
+    def _extract_table_columns_from_links(self, schema_links: List[str]) -> Dict[str, List[str]]:
+        """从 schema_links 中提取表.列信息
+        返回: {table_name: [col1, col2, ...]}
+        """
+        table_cols = {}
+        for link in schema_links:
+            # 匹配表.列模式（table.col 或 JOIN 关系 table1.col1=table2.col2）
+            parts = re.findall(r'(\w+)\.(\w+)', link)
+            for table, col in parts:
+                if table not in table_cols:
+                    table_cols[table] = []
+                if col not in table_cols[table]:
+                    table_cols[table].append(col)
+        return table_cols
+
+    def _get_filtered_tables_info(self, table_cols: Dict[str, List[str]]) -> str:
+        """根据表.列信息，只返回这些列的描述信息"""
+        result = []
+        for table_name, cols in sorted(table_cols.items()):
+            if table_name not in self.tables:
+                continue
+            table_info = self.tables[table_name]
+            result.append(f"\n表名: {table_name}")
+            result.append(f"描述: {table_info.get('table_description', 'N/A')}")
+            result.append("列名: (数据类型): 描述")
+            for col in table_info['columns']:
+                if col['col'] in cols:
+                    result.append(f"  - {col['col']} ({col['type']}): {col['description']}")
+        return '\n'.join(result)
+
     def run(self, input_data: Dict[str, Any]):
-        """执行 Schema Linking，返回验证后的 schema links 列表"""
-        # 获取表结构信息
-        table_schemas = self._get_tables_info(input_data['table_list'])
+        # 获取表结构信息（用于 LLM prompt）
+        table_schemas_full = self._get_tables_info(input_data['table_list'])
         # 构建输入
         prompt_input = {
             'common_knowledge': self.common_knowledge,
             'question': input_data['question'],
             'table_list': ', '.join(input_data['table_list']),
             'knowledge': input_data.get('knowledge', ''),
-            'table_schemas': table_schemas
+            'table_schemas': table_schemas_full
         }
+        # 打印完整的prompt内容
+        print("\n" + "="*80)
+        print("完整 Prompt:")
+        print("="*80)
+        formatted_prompt = self.prompt.format(**prompt_input)
+        print(formatted_prompt)
+        print("="*80 + "\n")
 
         # 调用 LLM 并处理
         response = self.chain.invoke(prompt_input)
         validated = SchemaValidator(self.table_columns)
+        schema_links = validated.validate_and_filter(self._parse_response(response))
+
+        # 从 schema_links 中提取表.列信息
+        table_cols = self._extract_table_columns_from_links(schema_links)
+        # 只返回 schema_links 中提到的列的描述信息
+        filtered_table_schemas = self._get_filtered_tables_info(table_cols)
+
         return {
-            "schema_links": validated.validate_and_filter(self._parse_response(response)),
-            "table_schemas": table_schemas
+            "schema_links": '\n'.join(schema_links),  # 将列表转换为字符串（用于prompt）
+            "table_schemas": filtered_table_schemas
         }
 
     def _parse_response(self, response: str) -> List[str]:
@@ -155,3 +198,5 @@ if __name__ == "__main__":
     node = SchemaLinkingNode()
     output = node.run(test_data)
     print(output['schema_links'])
+    print("*******************************************")
+    print(output['table_schemas'])

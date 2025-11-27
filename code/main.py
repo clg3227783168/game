@@ -26,6 +26,7 @@ class GraphState(TypedDict):
     max_retries: int  # 最大重试次数
     is_valid: bool  # SQL 是否有效
     error_message: str  # 错误消息
+    error_history: list  # 历史错误记录 [(sql, error_msg), ...]
 
 
 # 节点1: Schema Linking
@@ -55,7 +56,8 @@ def sql_generation_node(state: GraphState) -> GraphState:
         'table_list': state['table_list'],
         'knowledge': state['knowledge'],
         'schema_links': state['schema_links'],
-        'table_schemas': state['table_schemas']
+        'table_schemas': state['table_schemas'],
+        'error_history': state.get('error_history', [])
     })
 
     generated_sql = result.get('sql', '')
@@ -92,11 +94,21 @@ def sql_checker_node(state: GraphState) -> GraphState:
         print(f"\n❌ SQL 检查失败: {message}")
         print(f"当前重试次数: {state['retry_count'] + 1}/{state['max_retries']}")
 
+    # 记录错误历史
+    error_history = state.get('error_history', [])
+    if not is_valid:
+        error_history.append({
+            'sql': state['sql'],
+            'error_message': message,
+            'retry_count': state['retry_count']
+        })
+
     return {
         **state,
         'is_valid': is_valid,
         'error_message': message,
-        'retry_count': state['retry_count'] + 1
+        'retry_count': state['retry_count'] + 1,
+        'error_history': error_history
     }
 
 
@@ -188,7 +200,8 @@ def single_pipeline(input_dict):
         'retry_count': 0,
         'max_retries': 3,  # 最多重试3次
         'is_valid': False,
-        'error_message': ''
+        'error_message': '',
+        'error_history': []  # 初始化错误历史
     }
 
     # 构建并运行工作流

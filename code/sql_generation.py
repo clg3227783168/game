@@ -14,14 +14,7 @@ from llm_backend.getllm import get_claude_llm
 from base_agent import BaseAgent
 from pathlib import Path
 
-
-class SQLGenerationResult(BaseModel):
-    """SQL生成结果的结构化输出模型"""
-    sql: str = Field(
-        description="生成的SQL查询语句，必须是完整可执行的SQL"
-    )
-
-SQL_GENERATION_PROMPT = """你是一个专业的查询类SQL生成专家。
+SQL_GENERATION_PROMPT = """你是一个专业的SQL生成专家。
 
 **系统固有知识：**
 {common_knowledge}
@@ -34,7 +27,7 @@ SQL_GENERATION_PROMPT = """你是一个专业的查询类SQL生成专家。
 **业务知识：**
 {knowledge}
 
-**Schema Linking结果：**
+**Schema Linkings：**
 {schema_links}
 
 **表结构信息：**
@@ -43,22 +36,23 @@ SQL_GENERATION_PROMPT = """你是一个专业的查询类SQL生成专家。
 **相似案例：**
 {reference_case}
 
+{error_feedback}
 ---
 
 **要求：**
 1. 仔细分析问题需求和业务知识
-2. 使用Schema Linkings识别出的表和列，参考对应的表结构信息
+2. 使用Schema Linkings识别出的表和列，参考表结构信息
 3. 参考相似案例的SQL写法和模式
 4. 确保SQL语法正确，逻辑清晰
 5. 直接生成完整可执行的SQL语句
+6. **【重要】如果存在历史错误反馈，必须针对错误进行修正，避免重复相同的错误！**
 
 **【重要】输出格式要求（必须严格遵守）：**
-- 只输出完整的SQL语句，不要任何解释、说明或其他文字
+- 只输出完整的SQL语句，禁止任何解释、说明或其他文字
 - 使用以下格式包裹SQL语句：
 ```sql
 [你的SQL语句]
 ```
-- 如果不使用代码块，也可以直接输出SQL语句，但不能有任何额外的文本
 
 现在请生成SQL：
 """
@@ -94,7 +88,8 @@ class SQLGenerationNode(BaseAgent):
                 'knowledge',
                 'schema_links',
                 'table_schemas',
-                'reference_case'
+                'reference_case',
+                'error_feedback'
             ]
         )
 
@@ -113,6 +108,7 @@ class SQLGenerationNode(BaseAgent):
                 - schema_links: Schema Linking结果
                 - knowledge: 业务知识
                 - table_schemas: 表结构信息
+                - error_history: 错误历史列表（可选）
 
         Returns:
             结构化的SQL生成结果字典，包含以下字段：
@@ -128,8 +124,12 @@ class SQLGenerationNode(BaseAgent):
         schema_links = input_data.get('schema_links')
         knowledge = input_data.get('knowledge', '')
         table_schemas = input_data.get('table_schemas')
+        error_history = input_data.get('error_history', [])
 
         formatted_case = self._format_reference_case(self.sql_id_to_case.get(self.false2true_map.get(sql_id, ''), ''))
+
+        # 格式化错误反馈
+        error_feedback = self._format_error_feedback(error_history)
 
         prompt_input = {
             'common_knowledge': self.common_knowledge,
@@ -137,7 +137,8 @@ class SQLGenerationNode(BaseAgent):
             'knowledge': knowledge if knowledge else '无',
             'schema_links': schema_links,
             'table_schemas': table_schemas,
-            'reference_case': formatted_case
+            'reference_case': formatted_case,
+            'error_feedback': error_feedback
         }
 
         # 调用LLM生成SQL（文本输出）
@@ -237,6 +238,44 @@ class SQLGenerationNode(BaseAgent):
 
         # 如果所有方法都失败，返回原始文本（可能整个就是SQL）
         return response_text.strip()
+
+    def _format_error_feedback(self, error_history: List[Dict[str, Any]]) -> str:
+        """
+        格式化错误历史为Prompt字符串
+
+        Args:
+            error_history: 错误历史列表，每项包含:
+                - sql: 失败的SQL
+                - error_message: 错误信息
+                - retry_count: 重试次数
+
+        Returns:
+            格式化的错误反馈字符串
+        """
+        if not error_history:
+            return ""
+
+        feedback_lines = ["\n**历史错误反馈（必须针对这些错误进行修正）：**\n"]
+
+        for i, error in enumerate(error_history, 1):
+            sql = error.get('sql', '')
+            error_msg = error.get('error_message', '')
+            retry = error.get('retry_count', 0)
+
+            # 截断过长的SQL（保留前200字符）
+            sql_preview = sql[:200] + "..." if len(sql) > 200 else sql
+
+            feedback_lines.append(f"**第 {i} 次尝试：**")
+            feedback_lines.append(f"生成的SQL:")
+            feedback_lines.append(f"```sql")
+            feedback_lines.append(sql_preview)
+            feedback_lines.append(f"```")
+            feedback_lines.append(f"错误信息: {error_msg}")
+            feedback_lines.append("")
+
+        feedback_lines.append("**请根据上述错误，分析问题根因并生成正确的SQL！**")
+
+        return "\n".join(feedback_lines)
 
     def _format_reference_case(self, case: Dict[str, Any]) -> str:
         """

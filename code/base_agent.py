@@ -19,6 +19,6 @@ class BaseAgent:
         """
         初始化基类，自动加载通用知识
         """
-        with open(str(Path(__file__).parent / "data/common_knowledge.md"), 'r', encoding='utf-8') as f:
+        with open(("code/data/common_knowledge_optimized.md"), 'r', encoding='utf-8') as f:
             content = f.read()
         self.common_knowledge = content
