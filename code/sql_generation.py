@@ -14,47 +14,66 @@ from llm_backend.getllm import get_claude_llm
 from base_agent import BaseAgent
 from pathlib import Path
 
-SQL_GENERATION_PROMPT = """你是一个专业的SQL生成专家。
+SQL_GENERATION_PROMPT = """你是一个精通 **StarRocks (兼容 MySQL 协议)** 的数据仓库专家。
+你的任务是根据已知线索，编写准确、高效的 StarRocks SQL 查询语句。
 
-**系统固有知识：**
+**【系统固有知识】**
 {common_knowledge}
 
-**任务**：根据自然语言问题、Schema Linking结果、表结构信息和参考案例，生成准确的SQL查询语句。
-
-**问题：**
-{question}
-
-**业务知识：**
-{knowledge}
-
-**Schema Linkings：**
-{schema_links}
-
-**表结构信息：**
-{table_schemas}
-
-**相似案例：**
-{reference_case}
-
-{error_feedback}
 ---
 
-**要求：**
-1. 仔细分析问题需求和业务知识
-2. 使用Schema Linkings识别出的表和列，参考表结构信息
-3. 参考相似案例的SQL写法和模式
-4. 确保SQL语法正确，逻辑清晰
-5. 直接生成完整可执行的SQL语句
-6. **【重要】如果存在历史错误反馈，必须针对错误进行修正，避免重复相同的错误！**
+**【数据库方言与规范 (StarRocks)】**
 
-**【重要】输出格式要求（必须严格遵守）：**
-- 只输出完整的SQL语句，禁止任何解释、说明或其他文字
-- 使用以下格式包裹SQL语句：
+1.  **语法基础**：使用标准 SQL-92/99 语法，兼容 MySQL。
+    - 引用表名/列名时使用反引号 (例如: `column_name`)。
+    - 字符串使用单引号 (例如: 'value')。
+    - 别名使用 AS (例如: `SELECT col AS c`).
+2.  **日期格式 (高危)**：
+    - 此数据库中的日期分区字段通常为字符串格式 **'YYYYMMDD'** (无连字符)。
+    - 示例：`WHERE ds = '20251210'` (正确)，`WHERE ds = '2025-12-10'` (错误)。
+    - 如果需要进行日期计算，请使用 `date_add`, `date_sub`, `datediff`，但在与 `ds` 列比较前，必须格式化为 'YYYYMMDD' 字符串。
+3.  **分区裁剪**：
+    - 查询大表时，**必须**在 WHERE 子句中指定分区列（通常是 `ds` 或 `dtstatdate`）的过滤条件，否则禁止生成 SQL。
+
+---
+
+**【输入信息】**
+
+1.  **用户问题：**
+    {question}
+
+2.  **Schema Linking 结果 (结构化线索)：**
+    {schema_links}
+    *(说明: TIME=必须用于分区过滤的时间条件, FILT=强制过滤条件, SELC=展示列, LINK=关联条件)*
+
+3.  **业务知识 (SQL片段)：**
+    {knowledge}
+
+4.  **表结构信息：**
+    {table_schemas}
+{error_feedback}
+
+---
+
+**【生成步骤】**
+
+1.  **Step 1: 思考 (Thought)**
+    - 检查 `TIME` 标签：识别查询涉及的具体日期范围。
+    - 检查表结构中的分区字段（如 `ds`）：确认是否需要将日期转换为 'YYYYMMDD' 格式。
+    - 规划 Join 路径和 Group By 逻辑。
+
+2.  **Step 2: 编写 SQL**
+    - 优先处理 `WHERE` 子句，确保分区裁剪。
+    - 如果涉及 `knowledge` 中的复杂逻辑（如 `CASE WHEN`），直接复用。
+    - 确保 SQL 语法符合 StarRocks 要求。
+
+**【输出格式】**
+
+Thought:
+[你的逻辑分析，特别是关于日期格式转换的确认]
+
 ```sql
-[你的SQL语句]
-```
-
-现在请生成SQL：
+[完整的 StarRocks SQL 语句]
 """
 
 class SQLGenerationNode(BaseAgent):
@@ -126,7 +145,7 @@ class SQLGenerationNode(BaseAgent):
         table_schemas = input_data.get('table_schemas')
         error_history = input_data.get('error_history', [])
 
-        formatted_case = self._format_reference_case(self.sql_id_to_case.get(self.false2true_map.get(sql_id, ''), ''))
+        # formatted_case = self._format_reference_case(self.sql_id_to_case.get(self.false2true_map.get(sql_id, ''), ''))
 
         # 格式化错误反馈
         error_feedback = self._format_error_feedback(error_history)
@@ -137,20 +156,17 @@ class SQLGenerationNode(BaseAgent):
             'knowledge': knowledge if knowledge else '无',
             'schema_links': schema_links,
             'table_schemas': table_schemas,
-            'reference_case': formatted_case,
+            # 'reference_case': formatted_case,
             'error_feedback': error_feedback
         }
 
-        # 调用LLM生成SQL（文本输出）
-        print("\n[2/2] 调用LLM生成SQL...")
-
         # 打印完整的prompt内容
-        print("\n" + "="*80)
-        print("完整 Prompt:")
-        print("="*80)
-        formatted_prompt = self.prompt.format(**prompt_input)
-        print(formatted_prompt)
-        print("="*80 + "\n")
+        # print("\n" + "="*80)
+        # print("完整 Prompt:")
+        # print("="*80)
+        # formatted_prompt = self.prompt.format(**prompt_input)
+        # print(formatted_prompt)
+        # print("="*80 + "\n")
 
         response = self.chain.invoke(prompt_input)
 
@@ -160,17 +176,6 @@ class SQLGenerationNode(BaseAgent):
         # 解析提取SQL
         sql = self._extract_sql(response_text)
 
-        if not sql:
-            print(f"\n[警告] 无法从响应中提取SQL语句")
-            print(f"原始响应: {response_text[:200]}...")
-            return {
-                "sql": "",
-                "explanation": "无法从LLM响应中提取有效的SQL语句",
-                "notes": "LLM可能返回了非SQL内容",
-                "raw_response": response_text
-            }
-
-        # 返回成功结果
         return {
             "sql": sql
         }
@@ -219,7 +224,7 @@ class SQLGenerationNode(BaseAgent):
 
         for keyword in sql_keywords:
             # 尝试匹配从关键字到结束的所有内容
-            pattern = f'({keyword}.*?)(?:$|\n\n|(?=\n[^-\s]))'
+            pattern = fr'({keyword}.*?)(?:$|\n\n|(?=\n[^-\s]))'
             match = re.search(pattern, response_text, re.DOTALL | re.IGNORECASE)
             if match:
                 sql = match.group(1).strip()
@@ -298,59 +303,53 @@ if __name__ == "__main__":
 
     # 示例输入数据
     input_data = {
-        "question": "统计以下时间对应玩法id下的不同对局时长人数分布\n'20240717'-'20240723' 1310822585431254784'20241116'-'20241122' 1282371711108385024'20241123'-'20241129' 1287652322611036928'20240301'-'20240307' 1294211358396518400'20240607''20240613' 1297394991875754752\n对局时长按照 [0-10min)，[10-30min)，[30min-1h)，[1h,2h)，[2h,3h)，[3h,4h)， [4h,5h)， [5h,6h)，[6h,7h)，[7h,8h)，[8h,9h)，[9h,10h)，[10h,∞) 输出字段：玩法id、对局时长、人数",
-        "sql_id": "sql_58",
+        "sql_id": "sql_3",
+        "question": "统计2025年1月勇者盟约端游活跃玩家交叉峡谷端游及手游活跃玩家\n输出：玩家gplayerid",
+        "复杂度": "简单",
         "table_list": [
-            "dws_jordass_matchlog_stat_di"
+            "dws_argothek_oss_login_di",
+            "dim_argothek_gplayerid2qqwxid_df",
+            "dws_mgamejp_login_user_activity_di"
         ],
-        "schema_links": "dim_vplayerid_vies_df.suserid dim_vplayerid_vies_df.dtstatdate dim_vplayerid_vies_df.itag dws_mgamejp_login_user_activity_di.suserid dws_mgamejp_login_user_activity_di.sgamecode dws_mgamejp_login_user_activity_di.dtstatdate dws_mgamejp_login_user_activity_di.ionlinetime dws_mgamejp_login_user_activity_di.saccounttype dws_mgamejp_login_user_activity_di.suseridtype dws_mgamejp_login_user_activity_di.splattype dws_mgamejp_login_user_activity_di.splat dim_vplayerid_vies_df.suserid=dws_mgamejp_login_user_activity_di.suserid 20250724 其他 20250530 initiatived jordass esports allianceforce strategy playzone su -100 qq wxid",
-        "knowledge": "对局时长分布统计",
-        "table_schemas": """表名: dim_vplayerid_vies_df
-描述: 全量玩家重合竞品表
-列:
-  - dtstatdate (string): 统计日期
-  - vgameappid (string): 系统
-  - vplayerid (string): gplayerid
-  - suserid (string): suserid
-  - suserid_type (string): suserid类型
-  - itag (string): 用户分层标签
-  - is_reg (bigint): 是否当日新进
-  - is_actv (bigint): 是否当日活跃
-  - is_neibu (bigint): 是否内部玩家
-  - is_lowfps (bigint): 是否新进低帧率
-  - cbitmap (string): 活跃位图最左最新活跃
-  - gender (string): 性别
-  - province (string): 省份
-  - city (string): 城市
-  - city_level (string): 城市等级
-  - iregdate (string): 注册日期
-  - iregdate_agamek6 (string): 注册日期_端游
-  - lastdate (string): 最后活跃日期
-  - lastdate_agamek6 (string): 最后活跃日期_端游
-  - lastdays (bigint): 当日距离最后活跃的天数
-  - lastdays_agamek6 (bigint): 当日距离最后活跃的天数_未注册为-1_当日活跃为1_上日活跃为2
-  - lastdays_fps (bigint): FPS手游
-  - lastdays_vie1 (bigint): 战役先锋手游 esports
-  - lastdays_vie2 (bigint): 突出重围 mobile_live
-  - lastdays_vie3 (bigint): 枪火争锋手游 allianceforce
-  - lastdays_vie4 (bigint): 豪杰对决 strategy
-  - lastdays_vie5 (bigint): 砺刃使者 jordass
-  - lastdays_vie6 (bigint): 天弈 su 
-  - lastdays_vie7 (bigint): 勇士召唤手游 playzone 
-  - lastdays_vie8 (bigint): 峡谷手游活跃 initiatived
-  - lastdays_vie9 (bigint): 峡谷全量活跃 initiatived
-  - lastdays_vie10 (bigint): 峡谷端游活跃 initiatived
-  - lastdays_vie11 (bigint): 预留
-  - lastdays_vie12 (bigint): 预留
-  - lastdays_vie13 (bigint): 预留
-  - lastdays_vie14 (bigint): 预留
-  - lastdays_vie15 (bigint): 预留
-  - vtemp1 (string): 预留
-  - vtemp2 (string): 预留
-  - vtemp3 (string): 预留
-  - itemp1 (bigint): 预留
-  - itemp2 (bigint): 预留
-  - itemp3 (bigint): 预留"""
+        "schema_links": """TIME: dws_argothek_oss_login_di.statis_date BETWEEN '20250101' AND '20250131'
+TIME: dws_mgamejp_login_user_activity_di.dtstatdate BETWEEN '20250101' AND '20250131'
+FILT: dws_mgamejp_login_user_activity_di.sgamecode = 'initiatived'
+FILT: dws_mgamejp_login_user_activity_di.saccounttype = '-100'
+FILT: dws_mgamejp_login_user_activity_di.suseridtype IN ('qq', 'wxid')
+FILT: dws_mgamejp_login_user_activity_di.splattype IN ('-100', 'PC')
+FILT: dws_mgamejp_login_user_activity_di.splat = '-100'
+FILT: dws_mgamejp_login_user_activity_di.itimes >= 1
+FILT: dws_argothek_oss_login_di.ilogincount >= 1
+SELC: dim_argothek_gplayerid2qqwxid_df.iuserid
+LINK: dws_argothek_oss_login_di.iuserid = dim_argothek_gplayerid2qqwxid_df.iuserid
+LINK: dim_argothek_gplayerid2qqwxid_df.suserid = dws_mgamejp_login_user_activity_di.suserid
+""",
+        "table_schemas": """表名: dws_argothek_oss_login_di
+描述: 端页游活跃中间表(分大区不含255)
+列名: (数据类型): 描述
+  - statis_date (bigint): 统计时间
+  - iuserid (string): 用户ID
+  - ilogincount (bigint): 登录次数
+
+表名: dws_mgamejp_login_user_activity_di
+描述: 平台大盘日活跃表数据
+列名: (数据类型): 描述
+  - dtstatdate (bigint): 统计日期YYYYMMDD
+  - saccounttype (string): 帐号类型:QQ号或者微信
+  - suserid (string): 帐号
+  - suseridtype (string): 帐号类型:qq wxid playerid 
+  - sgamecode (string): 业务 
+  - splattype (string): 平台类型(大平台)。枚举值为Android/ iOS，取汇总时取-100 
+  - splat (string): 平台(小平台)。备注：写死的-100
+  - itimes (bigint): 活跃总次数。备注：该字段表示用户在T日的当日活跃总次数
+
+表名: dim_argothek_gplayerid2qqwxid_df
+描述: 全量用户gplayerid转qq或wxid
+列名: (数据类型): 描述
+  - iuserid (string): 用户id
+  - suserid (string): 存储qq/wxid如果微信和qq有绑定关系优先qq
+""",
+        "knowledge": "峡谷筛选逻辑:\nsgamecode = \"initiatived\" -- 筛选峡谷游戏\nand saccounttype = \"-100\" -- 账号体系，取-100表示汇总\nand suseridtype in (\"qq\", \"wxid\") -- 账号类型，取qq或wxid\nand splattype in (\"-100\", \"PC\") -- 峡谷手游玩家及PC端玩家\nand splat = \"-100\" -- 写死为-100"
     }
 
     # 运行SQL生成节点

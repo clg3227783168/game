@@ -1,6 +1,7 @@
 import json
 import os
-from typing import TypedDict, Annotated, Literal
+from datetime import datetime
+from typing import TypedDict, Annotated, Literal, Optional
 from langgraph.graph import StateGraph, END
 from schema_linking_generation import SchemaLinkingNode
 from sql_generation import SQLGenerationNode
@@ -27,6 +28,36 @@ class GraphState(TypedDict):
     is_valid: bool  # SQL 是否有效
     error_message: str  # 错误消息
     error_history: list  # 历史错误记录 [(sql, error_msg), ...]
+
+
+def _init_log_file() -> str:
+    """创建批处理日志文件并返回路径"""
+    log_dir = os.path.join(os.path.dirname(__file__), "log")
+    os.makedirs(log_dir, exist_ok=True)
+
+    log_filename = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + ".json"
+    log_file_path = os.path.join(log_dir, log_filename)
+
+    with open(log_file_path, 'w', encoding='utf-8') as f:
+        json.dump([], f, ensure_ascii=False, indent=2)
+
+    return log_file_path
+
+
+def _append_graph_state_log(log_file_path: str, graph_state: GraphState) -> None:
+    """将 GraphState 追加写入日志文件"""
+    try:
+        with open(log_file_path, 'r', encoding='utf-8') as f:
+            log_content = json.load(f)
+        if not isinstance(log_content, list):
+            log_content = []
+    except Exception:
+        log_content = []
+
+    log_content.append(graph_state)
+
+    with open(log_file_path, 'w', encoding='utf-8') as f:
+        json.dump(log_content, f, ensure_ascii=False, indent=2)
 
 
 # 节点1: Schema Linking
@@ -62,11 +93,6 @@ def sql_generation_node(state: GraphState) -> GraphState:
 
     generated_sql = result.get('sql', '')
 
-    print("\n生成的 SQL:")
-    print("-" * 80)
-    print(generated_sql[:500] + "..." if len(generated_sql) > 500 else generated_sql)
-    print("-" * 80)
-
     return {
         **state,
         'sql': generated_sql
@@ -76,9 +102,6 @@ def sql_generation_node(state: GraphState) -> GraphState:
 # 节点3: SQL Checker
 def sql_checker_node(state: GraphState) -> GraphState:
     """SQL Checker 节点 - 检查 SQL 正确性"""
-    print("\n" + "=" * 80)
-    print("步骤3: SQL Checker")
-    print("=" * 80)
 
     checker_node = SQLCheckerNode()
     result = checker_node.run({
@@ -87,12 +110,6 @@ def sql_checker_node(state: GraphState) -> GraphState:
 
     is_valid = result.get('is_valid', False)
     message = result.get('message', '')
-
-    if is_valid:
-        print(f"\n✅ SQL 检查通过！")
-    else:
-        print(f"\n❌ SQL 检查失败: {message}")
-        print(f"当前重试次数: {state['retry_count'] + 1}/{state['max_retries']}")
 
     # 记录错误历史
     error_history = state.get('error_history', [])
@@ -122,14 +139,11 @@ def should_retry(state: GraphState) -> Literal["end", "retry"]:
         "retry": SQL 错误且未达到最大重试次数，回到 Schema Linking
     """
     if state['is_valid']:
-        print("\n✅ SQL 验证通过，流程结束")
         return "end"
 
     if state['retry_count'] >= state['max_retries']:
-        print(f"\n⚠️ 已达到最大重试次数 ({state['max_retries']})，流程结束")
         return "end"
 
-    print(f"\n🔄 准备重试 ({state['retry_count']}/{state['max_retries']})...")
     return "retry"
 
 
@@ -162,8 +176,7 @@ def build_workflow() -> StateGraph:
 
     return workflow.compile()
 
-
-def single_pipeline(input_dict):
+def single_pipeline(input_dict, log_file_path: Optional[str] = None):
     """
     为一条数据生成SQL查询语句（使用 LangGraph）
 
@@ -183,10 +196,6 @@ def single_pipeline(input_dict):
             - retry_count: 重试次数
             - is_valid: SQL 是否通过验证
     """
-    print("\n" + "█" * 80)
-    print(f"开始处理: {input_dict['sql_id']}")
-    print(f"问题: {input_dict['question'][:100]}...")
-    print("█" * 80)
 
     # 初始化状态
     initial_state = {
@@ -194,7 +203,7 @@ def single_pipeline(input_dict):
         'question': input_dict['question'],
         'table_list': input_dict['table_list'],
         'knowledge': input_dict.get('knowledge', ''),
-        '复杂度': input_dict.get('复杂度', ''),
+        '复杂度': input_dict.get('复杂度'),
         'schema_links': [],
         'sql': '',
         'retry_count': 0,
@@ -208,17 +217,8 @@ def single_pipeline(input_dict):
     app = build_workflow()
     final_state = app.invoke(initial_state)
 
-    # 输出结果
-    print("\n" + "█" * 80)
-    print("处理完成")
-    print("█" * 80)
-    print(f"SQL ID: {final_state['sql_id']}")
-    print(f"重试次数: {final_state['retry_count']}")
-    print(f"验证结果: {'✅ 通过' if final_state['is_valid'] else '❌ 失败'}")
-    print("\n最终 SQL:")
-    print("-" * 80)
-    print(final_state['sql'])
-    print("-" * 80)
+    if log_file_path:
+        _append_graph_state_log(log_file_path, final_state)
 
     return {
         'sql_id': final_state['sql_id'],
@@ -235,11 +235,12 @@ def batch_pipeline(input_file: str, output_file: str):
         input_file: 输入 JSON 文件路径（如 false.json）
         output_file: 输出 JSON 文件路径
     """
+    log_file_path = _init_log_file()
+    print(f"日志文件已创建: {log_file_path}")
+
     # 加载输入数据
     with open(input_file, 'r', encoding='utf-8') as f:
         dataset = json.load(f)
-
-    print(f"\n加载了 {len(dataset)} 条数据")
 
     # 加载已有结果（如果存在）
     existing_results = {}
@@ -249,9 +250,7 @@ def batch_pipeline(input_file: str, output_file: str):
                 existing_data = json.load(f)
                 # 将已有结果转换为字典，方便查询
                 existing_results = {r['sql_id']: r for r in existing_data}
-                print(f"发现已有结果文件，包含 {len(existing_results)} 条记录")
         except Exception as e:
-            print(f"读取已有结果文件失败: {e}")
             existing_results = {}
 
     # 过滤出需要处理的数据（排除已存在的 sql_id）
@@ -261,7 +260,6 @@ def batch_pipeline(input_file: str, output_file: str):
         sql_id = item.get('sql_id')
         if sql_id in existing_results:
             skipped_count += 1
-            print(f"跳过已存在的记录: {sql_id}")
         else:
             todo_items.append(item)
 
@@ -275,7 +273,7 @@ def batch_pipeline(input_file: str, output_file: str):
         print(f"处理进度: {i}/{len(todo_items)}")
         print(f"{'='*80}")
 
-        result = single_pipeline(item)
+        result = single_pipeline(item, log_file_path=log_file_path)
         new_results.append(result)
         existing_results[result['sql_id']] = result
 
@@ -289,17 +287,8 @@ def batch_pipeline(input_file: str, output_file: str):
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(all_results, f, ensure_ascii=False, indent=2)
 
-    print(f"\n{'='*80}")
-    print(f"处理完成！结果已保存到: {output_file}")
-    print(f"{'='*80}")
-
     # 统计信息
     valid_count = sum(1 for r in all_results if r.get('is_valid', False))
-    print(f"\n统计信息:")
-    print(f"  总数: {len(all_results)}")
-    print(f"  本次新增: {len(new_results)}")
-    print(f"  验证通过: {valid_count}")
-    print(f"  验证失败: {len(all_results) - valid_count}")
 
 
 if __name__ == "__main__":
