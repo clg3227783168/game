@@ -172,83 +172,10 @@ class SchemaLinkingNode(BaseAgent):
         response_text = raw_response.content if hasattr(raw_response, 'content') else str(raw_response)
         schema_links = self._parse_schema_links(response_text)
 
-        # 从 schema_links 中提取表列信息
-        table_cols = self._extract_table_columns_from_links(schema_links)
-        # 只返回 schema_links 中提到的描述信息, 如果未能提取则退回使用完整表结构
-        filtered_table_schemas = self._get_filtered_tables_info(table_cols) or table_schemas_full
-
         return {
             "schema_links": schema_links,
-            "table_schemas": filtered_table_schemas
+            "table_schemas": table_schemas_full
         }
-
-    def _extract_table_columns_from_links(self, schema_links: str) -> Dict[str, List[str]]:
-        """
-        从 Schema Linking 的文本结果中解析出涉及的表和列
-        返回格式: {table_name: [col1, col2, ...]}
-        """
-        if not schema_links:
-            return {}
-
-        # 构建表名和列名的小写索引，提升匹配鲁棒性
-        table_lookup = {table.lower(): table for table in self.table_columns}
-        column_lookup = {
-            table: {col.lower(): col for col in cols}
-            for table, cols in self.table_columns.items()
-        }
-
-        pattern = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)')
-        extracted: Dict[str, set] = {}
-
-        for table_raw, col_raw in pattern.findall(schema_links):
-            table_key = table_lookup.get(table_raw.lower())
-            if not table_key:
-                continue
-
-            # 只保留 schema 中存在的列，避免错误列名干扰
-            normalized_col = column_lookup[table_key].get(col_raw.lower())
-            if not normalized_col:
-                continue
-
-            extracted.setdefault(table_key, set()).add(normalized_col)
-
-        # 按 schema 中的顺序返回列列表，保持输出稳定
-        ordered_result: Dict[str, List[str]] = {}
-        for table, cols in extracted.items():
-            ordered_cols = [col for col in self.table_columns[table] if col in cols]
-            ordered_result[table] = ordered_cols
-
-        return ordered_result
-
-    def _get_filtered_tables_info(self, table_cols: Dict[str, List[str]]) -> str:
-        """
-        根据提取到的表-列映射，返回对应的表结构描述字符串。
-        如果某个表未提取到具体列，则返回空字符串，由调用方决定回退策略。
-        """
-        if not table_cols:
-            return ""
-
-        result_lines = []
-        for table_name, cols in table_cols.items():
-            table_info = self.tables.get(table_name)
-            if not table_info:
-                continue
-
-            filtered_cols = set(cols)
-            if not filtered_cols:
-                # 如果没有具体列，则跳过该表，由上游回退到完整 schema
-                continue
-
-            result_lines.append(f"\n表名: {table_name}")
-            result_lines.append(f"描述: {table_info.get('table_description', 'N/A')}")
-            result_lines.append("列名: (数据类型): 描述")
-
-            # 仅输出提取到的列，顺序沿用原 schema
-            for col in table_info['columns']:
-                if col['col'] in filtered_cols:
-                    result_lines.append(f"  - {col['col']} ({col['type']}): {col['description']}")
-
-        return '\n'.join(result_lines)
 
     def _parse_schema_links(self, llm_output):
         """
